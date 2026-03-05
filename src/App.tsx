@@ -1,25 +1,44 @@
 import { useState, useEffect } from "react";
 import "./App.css";
 
+// Types
+type SearchStatus = "idle" | "loading" | "success" | "empty" | "error";
+
+type TopicSummary = {
+  pageid: number
+  title: string
+  snippet: string
+};
+
+type WikiSearchItem = {
+  pageid: number
+  title: string
+  snippet?: string
+}
+
+type WikiSearchResponse = {
+  query?: {
+    search?: WikiSearchItem[]
+  }
+}
+
+function htmlToText(item: string): string {
+  const parser = new DOMParser().parseFromString(item, "text/html");
+  return parser.body.textContent || "";
+}
+
 export default function App() {
   const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchStatus, setSearchStatus] = useState("idle");
-  const [searchError, setSearchError] = useState(null);
-  const [searchResults, setSearchResults] = useState([]);
-
-  const SEARCH_URL = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${searchQuery}&format=json&origin=*&srlimit=20`;
-  const DETAILS_URL = `https://en.wikipedia.org/w/api.php?action=${searchQuery}&prop=extracts|info&pageids=10&format=json&origin=*&exintro=1&explaintext=1&inprop=url`;
-
-  function htmlToTtext(item) {
-    const parser = new DOMParser().parseFromString(item, "text/html");
-    return parser.body.textContent || "";
-  }
+  const [searchStatus, setSearchStatus] = useState<SearchStatus>("idle");
+  const [searchError, setSearchError] = useState("");
+  const [searchResults, setSearchResults] = useState<TopicSummary[]>([]);
+  const [selectedCompareIds, setSelectedCompareIds] = useState<Set<number>>(new Set())
 
   // Debounce
   useEffect(() => {
     const id = setTimeout(() => {
-      setSearchQuery(searchInput);
+      setSearchQuery(searchInput.trim());
     }, 300);
 
     return () => {
@@ -27,52 +46,75 @@ export default function App() {
     };
   }, [searchInput]);
 
-  async function fetchData() {
-    if (!searchQuery) return;
-    /* LOAD */
-    setSearchStatus("loading");
-    setSearchError("");
-    setSearchResults([]);
+  useEffect(() => {
+    // Abort controller
+    const controller = new AbortController();
+    const signal = controller.signal;
 
-    /* SEND */
-    try {
-      const res = await fetch(
-        `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${searchQuery}&format=json&origin=*&srlimit=20`,
-      );
-      /* VALIDATE */
-      if (!res.ok) {
+    const q = searchQuery;
+
+    // Wiki url
+    const url =
+      "https://en.wikipedia.org/w/api.php" +
+      "?action=query&list=search" +
+      `&srsearch=${encodeURIComponent(q)}` +
+      "&format=json&origin=*&srlimit=20";
+
+    // Fetch wiki
+    async function fetchData() {
+      if (!q) {
+        setSearchStatus("idle");
+        setSearchError("");
+        setSearchResults([]);
+        return;
+      }
+      /* LOAD */
+      setSearchStatus("loading");
+      setSearchError("");
+      setSearchResults([]);
+
+      /* SEND */
+      try {
+        const res = await fetch(url, { signal });
+        /* VALIDATE */
+        if (!res.ok) {
+          setSearchStatus("error");
+          setSearchError("Something went wrong");
+          return;
+        }
+        /* UI */
+        const data: WikiSearchResponse = await res.json();
+        const results = data?.query?.search ?? [];
+
+        if (results.length === 0) {
+          setSearchStatus("empty");
+          setSearchError(`No results for ${q}`);
+          return;
+        }
+
+        setSearchResults(
+          results.map((result) => ({
+            pageid: result.pageid,
+            title: result.title,
+            snippet: htmlToText(result.snippet || ""),
+          })),
+        );
+
+        setSearchStatus("success");
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        console.error(err);
         setSearchStatus("error");
         setSearchError("Something went wrong");
-        return;
       }
-      /* UI */
-      const data = await res.json();
-      const results = data?.query?.search ?? [];
-
-      if (results.length === 0) {
-        setSearchStatus("success");
-        setSearchError(`No results for ${searchQuery}`);
-        return;
-      }
-
-      setSearchResults(
-        results.map((result) => ({
-          id: result.pageid,
-          title: result.title,
-          snippet: htmlToTtext(result.snippet),
-          detailsStatus: "idle",
-          detailsError: "",
-          details: null,
-        })),
-      );
-
-      setSearchStatus("success");
-    } catch (err) {
-      console.error(err);
-      setSearchStatus("error");
-      setSearchError("Something went wrong");
     }
-  }
+
+    fetchData();
+
+    return () => {
+      controller.abort();
+    };
+  }, [searchQuery]);
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900">
@@ -91,18 +133,19 @@ export default function App() {
                 className="w-full rounded-lg px-3 py-2 text-sm outline-none bg-slate-100"
                 placeholder="Search Wikipedia topics"
                 value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchInput(e.target.value)}
               />
             </label>
             <div className="flex items-center gap-2">
-              <button className="rounded-lg border bg-white px-3 py-2 text-sm shadow-sm hover:bg-slate-50 cursor-pointer">
-                Clear
-              </button>
               <button
-                onClick={fetchData}
-                className="rounded-lg bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-800 cursor-pointer"
+                onClick={() => {
+                  setSearchInput("");
+                  setSearchQuery("");
+                }}
+                type="button"
+                className="rounded-lg border bg-white px-3 py-2 text-sm shadow-sm hover:bg-slate-50 cursor-pointer"
               >
-                Search
+                Clear
               </button>
             </div>
           </div>
@@ -114,7 +157,7 @@ export default function App() {
           </div>
           <div className="mt-3 grid gap-3">
             {searchResults.map((r) => (
-              <article className="rounded-xl shadow-md bg-white p-4">
+              <article key={r.pageid} className="rounded-xl shadow-md bg-white p-4">
                 <div className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
                     <a
@@ -123,9 +166,7 @@ export default function App() {
                     >
                       <h3 className="text-lg font-bold">{r.title}</h3>
                     </a>
-                    <p className="text-base">
-                      {r.snippet.replace(/<[^>]*>/g, "")}
-                    </p>
+                    <p className="text-base">{r.snippet}</p>
                   </div>
                   <div className="flex sm:flex-col items-center gap-3">
                     <button className="rounded-lg bg-slate-900 px-3 py-2 text-sm text-white hover:bg-slate-800 cursor-pointer whitespace-nowrap">
